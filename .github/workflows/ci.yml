@@ -20,5 +20,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check imports and syntax
+        run: |
+          python -m compileall -q app notebooks
+          PYTHONPATH=. python -c "from notebooks import eda_pipeline, compare_pipeline"
+
       - name: Check Python version
         run: python --version

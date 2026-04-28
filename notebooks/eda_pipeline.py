@@ -11,9 +11,14 @@ from scipy import stats
 
 
 def repo_root_from_notebooks() -> Path:
-    """Assume notebook lives under notebooks/; project root is one level up."""
-    here = Path.cwd()
-    return here.parent if here.name == "notebooks" else here
+    """Resolve project root whether the kernel cwd is repo root or notebooks/."""
+    here = Path.cwd().resolve()
+    cand = here.parent if here.name == "notebooks" else here
+    if (cand / "data").is_dir():
+        return cand
+    if (here / "data").is_dir():
+        return here
+    return cand
 
 
 def load_raw(country_slug: str, root: Path | None = None) -> pd.DataFrame:
@@ -24,11 +29,22 @@ def load_raw(country_slug: str, root: Path | None = None) -> pd.DataFrame:
             f"Place the NASA POWER extract at {path} (see challenge data link). "
             "Do not commit CSVs to git."
         )
-    df = pd.read_csv(path)
-    # Skip NASA comment/header lines if present (POWER often uses 25-30 header rows)
-    if "YEAR" not in df.columns:
-        df = pd.read_csv(path, skiprows=list(range(25)))
-    return df
+    # NASA POWER text exports may ship with a long parameter header (skip N lines).
+    attempts: list[int | None] = [None]
+    attempts.extend(list(range(18, 38)))
+    last_err: Exception | None = None
+    for skip in attempts:
+        try:
+            df = pd.read_csv(path, skiprows=skip) if skip is not None else pd.read_csv(path)
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            continue
+        if {"YEAR", "DOY"}.issubset(df.columns):
+            return df
+    raise ValueError(
+        f"Could not find YEAR/DOY columns in {path}. "
+        f"Try adjusting skiprows for your export. Last error: {last_err!r}"
+    )
 
 
 def initial_transform(df: pd.DataFrame, country_name: str) -> pd.DataFrame:
@@ -52,9 +68,9 @@ def zscore_outlier_mask(
     for c in cols:
         if c not in df.columns:
             continue
-        s = df[c]
+        s = df[c].astype(float)
         valid = s.dropna()
-        if len(valid) < 2:
+        if len(valid) < 2 or valid.nunique() < 2:
             continue
         z = np.abs(stats.zscore(s, nan_policy="omit"))
         m = z > 3
@@ -64,10 +80,10 @@ def zscore_outlier_mask(
 
 
 def handle_missing(
-    df: pd.DataFrame, weather_cols: list[str]
+    df: pd.DataFrame, weather_cols: list[str], date_col: str = "date"
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Drop rows where >30% of weather vars are NA; forward-fill remaining NAs per column order.
+    Drop rows where >30% of weather vars are NA; forward-fill remaining NAs in time order.
     Returns (cleaned_df, dropped_rows_df).
     """
     w = [c for c in weather_cols if c in df.columns]
@@ -76,6 +92,8 @@ def handle_missing(
     drop_idx = frac > 0.30
     dropped = df.loc[drop_idx]
     cleaned = df.loc[~drop_idx].copy()
+    if date_col in cleaned.columns:
+        cleaned = cleaned.sort_values(date_col)
     for c in w:
         cleaned[c] = cleaned[c].ffill()
     return cleaned, dropped

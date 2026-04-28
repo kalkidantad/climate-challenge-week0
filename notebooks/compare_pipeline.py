@@ -122,43 +122,57 @@ def max_dry_days_by_year_country(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def anova_or_kruskal_t2m(df: pd.DataFrame) -> tuple[str, float, object]:
-    """Return test name, p-value, and full result tuple."""
-    groups = [df.loc[df["Country"] == c, "T2M"].dropna().values for c in sorted(df["Country"].unique())]
+def anova_or_kruskal_t2m(df: pd.DataFrame) -> tuple[str, float, float, object]:
+    """Return test name, statistic, p-value, and scipy result object."""
+    groups = [
+        df.loc[df["Country"] == c, "T2M"].dropna().values
+        for c in sorted(df["Country"].unique())
+    ]
     norm_ok = len(groups) >= 2 and all(len(g) >= 20 for g in groups)
     if norm_ok:
         lev = stats.levene(*groups)
         if getattr(lev, "pvalue", 1.0) < 0.05:
             h = stats.kruskal(*groups)
-            return ("Kruskal–Wallis (heterogeneous variance)", float(h.statistic), h)
+            return ("Kruskal–Wallis (heterogeneous variance)", float(h.statistic), float(h.pvalue), h)
         f = stats.f_oneway(*groups)
-        return ("One-way ANOVA", float(f.statistic), f)
+        return ("One-way ANOVA", float(f.statistic), float(f.pvalue), f)
     h = stats.kruskal(*groups)
-    return ("Kruskal–Wallis", float(h.statistic), h)
+    return ("Kruskal–Wallis", float(h.statistic), float(h.pvalue), h)
 
 
-def vulnerability_rank_summary(df: pd.DataFrame, heat_counts: pd.DataFrame, drought: pd.DataFrame) -> pd.DataFrame:
-    """Composite ranking columns: higher warmth, higher precip std, heat days, drought streak as stress."""
+def vulnerability_rank_summary(
+    df: pd.DataFrame, heat_counts: pd.DataFrame, drought: pd.DataFrame
+) -> pd.DataFrame:
+    """Composite ranking: higher warmth, precip variability, heat days, dry streaks → higher stress."""
     tc = agg_table_t2m(df).rename(columns={"mean": "t2m_mean", "std": "t2m_std"})
     pc = agg_table_precip(df).rename(columns={"std": "precip_std"})
-    heat_mean = heat_counts.groupby("Country")["heat_days_35"].mean().rename("heat_days_mean_ann")
+    countries = sorted(df["Country"].unique())
+    heat_mean = (
+        heat_counts.groupby("Country")["heat_days_35"].mean()
+        if not heat_counts.empty
+        else pd.Series(0.0, index=countries)
+    )
+    heat_mean = heat_mean.reindex(countries, fill_value=0.0).rename("heat_days_mean_ann")
     d_mean = drought.groupby("Country")["max_consecutive_dry_days"].mean().rename("dry_streak_mean")
+    d_mean = d_mean.reindex(countries).fillna(0.0)
     out = tc.join(pc[["precip_std"]], how="outer").join(heat_mean, how="left").join(d_mean, how="left")
-    # simple composite (higher = more stressed for these oriented metrics)
-    for c in out.columns:
-        out[c] = out[c].fillna(out[c].median())
+    for col in out.columns:
+        out[col] = out[col].fillna(out[col].median())
     out["stress_score"] = (
         z(out["t2m_mean"])
         + z(out["precip_std"])
         + z(out["heat_days_mean_ann"])
         + z(out["dry_streak_mean"])
     )
-    out["rank_most_vulnerable"] = out["stress_score"].rank(ascending=False)
+    out["rank_most_vulnerable"] = out["stress_score"].rank(ascending=False, method="min")
     return out.round(4).sort_values("stress_score", ascending=False)
 
 
 def z(s: pd.Series) -> pd.Series:
-    v = stats.zscore(s, nan_policy="omit")
+    x = s.astype(float)
+    if len(x) < 2 or x.std(ddof=0) == 0 or pd.isna(x.std(ddof=0)):
+        return pd.Series(0.0, index=s.index)
+    v = stats.zscore(x, nan_policy="omit")
     return pd.Series(v, index=s.index)
 
 
