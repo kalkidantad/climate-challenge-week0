@@ -4,6 +4,7 @@ __pycache__/
 
 # Virtual env
 venv/
+.venv/
 
 # Data files
 data/
