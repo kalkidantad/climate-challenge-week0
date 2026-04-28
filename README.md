@@ -28,6 +28,12 @@ Per the brief, work on branch `eda-<country>`. Notebooks are supplied for all fi
 
 Run cells top-to-bottom. Shared helpers: `notebooks/eda_pipeline.py`.
 
+**Shortcut:** export all five `*_clean.csv` files without opening Jupyter:
+
+```bash
+python scripts/export_all_clean.py
+```
+
 Regenerate notebooks from the template script after editing:
 
 ```bash
